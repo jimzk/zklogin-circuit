@@ -41,6 +41,7 @@ DivideMod2Power: Returns quotient (in / 2^p) and remainder (in % 2^p)
 Range checks:
     - 0 <= in < 2^n (Checked in Num2Bits)
     - 0 < p < n
+DivideMod2Power(n, p)(in) = (in / 2^p, in % 2^p)
 **/
 template DivideMod2Power(n, p) {
     assert(n <= 252); // n <= log(p) - 2
@@ -68,8 +69,8 @@ template DivideMod2Power(n, p) {
 RemainderMod4: Calculates in % 4.
 
 Construction Params:
-    - n:  The bitwidth of in. 
-                
+    - n:  The bitwidth of in.
+
 Range checks:
     - 0 <= in < 2^n (Checked in Num2Bits)
 **/
@@ -79,7 +80,8 @@ template RemainderMod4(n) {
     signal input in;
     signal output out;
 
-    component toBits = Num2Bits(n);
+    // 巧妙地取余数
+    component toBits = Num2Bits(n);  // 将in转换成长度为n的二进制数组。因此有0 <= in < 2^n。
     toBits.in <== in;
     out <== 2 * toBits.out[1] + toBits.out[0];
 }
@@ -163,9 +165,11 @@ template Bits2NumBE(n) {
 Segments2NumBE: Converts a list of w-bit segments to a number, in big-endian order.
 
 Note: It is assumed that each input segment is a number between 0 and 2^w - 1.
+
+Segments2NumBE(n, w)(in)：将长度n的数组in，按w位宽（每个元素占几个比特位）转换成数字。
 **/
 template Segments2NumBE(n, w) {
-    assert(n * w <= 253); 
+    assert(n * w <= 253);  // 数组里所有元素的位数总和不超过253，即数字的
 
     signal input in[n];
     signal output out;
@@ -186,7 +190,7 @@ Segments2NumLE: Converts a list of w-bit segments to a number, in little-endian 
 Note: It is assumed that each input segment is a number between 0 and 2^w - 1.
 **/
 template Segments2NumLE(n, w) {
-    assert(n * w <= 253); 
+    assert(n * w <= 253);
 
     signal input in[n];
     signal output out;
@@ -202,7 +206,7 @@ template Segments2NumLE(n, w) {
 }
 
 /**
-AssertEqualIfEnabled: Optimized version of the official ForceEqualIfEnabled 
+AssertEqualIfEnabled: Optimized version of the official ForceEqualIfEnabled
 
 If enabled is 1, then in[0] == in[1]. Otherwise, in[0] and in[1] can be anything.
 
@@ -236,6 +240,8 @@ out[i] = 1 if i = index, 0 otherwise.
 
 Range checks:
     - index in [0, n). Fails otherwise.
+
+OneBitVector(n)(index)：返回将长度为n的数组，index位置为1，其他位置为0
 **/
 template OneBitVector(n) {
     signal input index;

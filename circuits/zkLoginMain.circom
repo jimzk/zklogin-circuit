@@ -29,7 +29,11 @@ Construction params:
     - maxExtIssLength:          Maximum length the extended iss claim (in ASCII bytes)
 
 Private Inputs:
-    - padded_unsigned_jwt[inCount]: X in bytes where X is the padded unsigned JWT + zeroes
+    - padded_unsigned_jwt[inCount]: header || '.' || payload || sha2pad || zeroes (optional).
+                                    - sha256pad分两部分：padding和消息长度；
+                                    - 这里的header和payload不需要填充，实际多长这里就是多长。
+                                    - 只要到sha2pad的长度，是64的倍数就可以（SHA2-256的分块长度是512位）。
+                                    - 后面添加0，直到长度为inCount（这里是固定为maxPaddedUnsignedJWTLen）
     - payload_start_index:      The index of the first byte of the payload in the padded unsigned JWT
 
     - num_sha2_blocks:          The number of SHA2 blocks in the padded unsigned JWT
@@ -70,8 +74,8 @@ Public Inputs:
     - all_inputs_hash:          Hash of all the signals revealed to the verifier
 
 Note: The circuit does not restrict the key claim names intentionally.
-This is not a security issue because the key claim name (e.g., "sub") 
-is used to derive a user's address seed. So using a different key 
+This is not a security issue because the key claim name (e.g., "sub")
+is used to derive a user's address seed. So using a different key
 claim name will just result in a different address.
 */
 template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
@@ -81,7 +85,7 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     var inCount = maxPaddedUnsignedJWTLen;
 
     /**
-     1. Parse out the JWT header 
+     1. Parse out the JWT header
     **/
     signal input padded_unsigned_jwt[inCount];
     signal input payload_start_index;
@@ -91,9 +95,12 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     signal header[maxHeaderLen] <== SliceFromStart(inCount, maxHeaderLen)(
         padded_unsigned_jwt, header_length
     );
+    // 将header数组哈希，得到的是域上的一个点
+    // 这里包括下面的XX_F，都是为了做最后的all_inputs_hash计算。
     signal header_F <== HashBytesToField(maxHeaderLen)(header);
 
     // Check that there is a dot after header
+    // 得到padded_unsigned_jwt[header_length]。根据编码，这个元素是符号.。
     var x = SingleMultiplexer(inCount)(padded_unsigned_jwt, header_length);
     x === 46; // 46 is the ASCII code for '.'
 
@@ -106,12 +113,18 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     signal input payload_len;
 
     // Check the validity of the SHA2 padding
+    // SHA2-256是分块处理的，每个块是512位，即64字节。
     var padded_unsigned_jwt_len = 64 * num_sha2_blocks; // 64 bytes per SHA2 block
+    // padded_unsigned_jwt = header || . ||  payload || padding
+    // sha2pad_index是padding部分的起始下标
     var sha2pad_index = payload_start_index + payload_len;
+    // padded_unsigned_jwt的长度是inCount，但它只有前面的部分是有效的，后面置0是为了达到固定长度。
+    // 而有效长度是padded_unsigned_jwt_len，它小于inCount。
     SHA2PadVerifier(inCount)(padded_unsigned_jwt, padded_unsigned_jwt_len, sha2pad_index);
 
     var hashCount = 4;
     var hashWidth = 256 / hashCount;
+    // 把256位的sha256拆成4元素的数组，每个元素是256/4=64位
     signal jwt_sha2_hash[hashCount] <== Sha2_wrapper(inWidth, inCount, hashWidth, hashCount)(
         padded_unsigned_jwt, num_sha2_blocks
     );
@@ -119,8 +132,8 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     /**
      3. Check signature
     **/
-    signal input signature[32]; // The JWT signature  
-    signal input modulus[32];
+    signal input signature[32]; // The JWT signature
+    signal input modulus[32];  // RSA的module长度为32*8*8=2048位
     var jwt_sha2_hash_le[4]; // converting to little endian
     for (var i = 0; i < 4; i++) {
         jwt_sha2_hash_le[i] = jwt_sha2_hash[3 - i];
@@ -137,7 +150,7 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     /**
      4. Checks on extended_key_claim + extract key claim name, value
 
-    Note that the OpenID standard permits extended_key_claim to be any valid JSON member. 
+    Note that the OpenID standard permits extended_key_claim to be any valid JSON member.
     But the below logic is (slightly) more restrictive as it imposes a few length restrictions:
         - the extended claim needs to fit in maxExtKCLen bytes
         - the claim name needs to fit in maxKCNameLen bytes
@@ -149,7 +162,7 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     var maxKCValueLenWithQuotes = maxKCValueLen + 2; // 2 for quotes
     // 1 for colon, 1 for comma / brace
 
-    // We set maxExtKCLen to a value lesser than 
+    // We set maxExtKCLen to a value lesser than
     //  maxKCNameLenWithQuotes + maxKCValueLenWithQuotes + 2 + maxWhiteSpaceLen
     //  as we optimize #constraints. See the comments section in ExtClaimOps for more details.
     signal input ext_kc[maxExtKCLen];
@@ -183,6 +196,9 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     kc_value_with_quotes <== KCExtClaim.claim_value;
 
     // HashBytesToField for later use
+    // 提出JWT中ext_kc表示的name和value。
+    // 这里只是提取了出来，没有做检查。后面只用在做最后的all_inputs_hash计算。
+    // ？？？ext_kc似乎是自定义字段——因为kc_name_length都是input
     signal kc_name[maxKCNameLen] <== QuoteRemover(maxKCNameLen + 2)(
         kc_name_with_quotes, kc_name_length
     );
@@ -195,11 +211,11 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
 
     /**
      5. Checks on extended_nonce
-        a) Is it in the JWT payload? 
+        a) Is it in the JWT payload?
         b) Calculate nonce from public key, epoch, and randomness
         c) Check that nonce appears in extended_nonce
     **/
-    var nonce_name_length = 7;
+    var nonce_name_length = 7;  // "nonce"的长度，包括两个引号
     var nonce_value_length = 29; // 27 for Base64 encoding of 256 bits, 2 for quotes
     var maxExtNonceLength = nonce_name_length + nonce_value_length + 2 + maxWhiteSpaceLen;
 
@@ -227,10 +243,11 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     NonceExtClaim.value_length <== nonce_value_length;
     NonceExtClaim.payload_start_index <== payload_start_index;
 
+    // 提出JWT中ext_nonce表示的name和value。
     nonce_name_with_quotes <== NonceExtClaim.claim_name;
     nonce_value_with_quotes <== NonceExtClaim.claim_value;
 
-    var expected_nonce_name[nonce_name_length] = [34, 110, 111, 110, 99, 101, 34]; // "nonce"
+    var expected_nonce_name[nonce_name_length] = [34, 110, 111, 110, 99, 101, 34]; // "nonce"的ASCII编码
     for (var i = 0; i < nonce_name_length; i++) {
         nonce_name_with_quotes[i] === expected_nonce_name[i];
     }
@@ -242,6 +259,8 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     component size_checker_2 = Num2Bits(128);
     size_checker_2.in <== jwt_randomness; // ensure it is 16 bytes
 
+    // 通过input中的(public_key, epoch, randomness)，计算出nonce
+    // eph_public_key是256位位临时密钥，这里拆成了2个128位的数。
     signal nonce <== Hasher(4)([
         eph_public_key[0],
         eph_public_key[1],
@@ -250,6 +269,7 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     ]);
 
     // 5c) Check that nonce appears in extended_nonce
+    // 检查JWT中的nonce跟计算出来的nonce是否相等
     NonceChecker(nonce_value_length, 160)(
         expected_nonce <== nonce,
         actual_nonce <== nonce_value_with_quotes
@@ -259,9 +279,10 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     6. Checks on the email_verified claim:
         If the key claim is email, then we check that the value is true.
         Otherwise, it is expected that the nonce string is input so that string parsing routines do not complain.
+
     **/
 
-    var maxEVNameLenWithQuotes = 16; // 2 for quotes
+    var maxEVNameLenWithQuotes = 16; // "email_verified"的长度
     var maxEVValueLen = 29; // same as nonce
     var maxExtEVLength = maxEVNameLenWithQuotes + maxEVValueLen + 2 + maxWhiteSpaceLen;
 
@@ -293,6 +314,8 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     ev_name_with_quotes <== EVExtClaim.claim_name;
     ev_value <== EVExtClaim.claim_value;
 
+    // 如果kc_name是"email"，那"email_verified"的值必须是true或"true"；
+    // 如果kc_name为其他值，则不做检查。
     EmailVerifiedChecker(maxKCNameLen, maxEVValueLen)(
         kc_name, kc_name_length - 2, // -2 for quotes
         ev_name_with_quotes, ev_value, ev_value_length
@@ -301,8 +324,7 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     /**
     7. Checks on ext_aud + extract aud
     **/
-
-    var aud_name_length = 3 + 2; // "aud"
+    var aud_name_length = 3 + 2; // "aud"的长度
     var maxAudValueLenWithQuotes = maxAudValueLen + 2; // 2 for quotes
     // 1 for colon, 1 for comma / brace
     var maxExtAudLength = aud_name_length + maxAudValueLenWithQuotes + 2 + maxWhiteSpaceLen;
@@ -330,11 +352,12 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     AudExtClaim.value_length <== aud_value_length;
     AudExtClaim.payload_start_index <== payload_start_index;
 
+    // 取出JWT中的aud字段，它是App的唯一标识。
     aud_name_with_quotes <== AudExtClaim.claim_name;
     aud_value_with_quotes <== AudExtClaim.claim_value;
 
     // Check if aud_name_with_quotes == "aud"
-    var expected_aud_name[aud_name_length] = [34, 97, 117, 100, 34];
+    var expected_aud_name[aud_name_length] = [34, 97, 117, 100, 34];  // "aud"的ASCII编码
     for (var i = 0; i < aud_name_length; i++) {
         aud_name_with_quotes[i] === expected_aud_name[i];
     }
@@ -348,19 +371,25 @@ template zkLogin(maxHeaderLen, maxPaddedUnsignedJWTLen,
     /**
     8. Reveal the portion of JWT encoding the extended iss claim.
        Note that we are revealing a base64 string.
+       JWT中的iss是JWT提供商的唯一标识。
     **/
     signal input iss_index_b64;
     signal input iss_length_b64;
     var iss_b64_F; // output
     var iss_index_in_payload_mod_4; // output
 
+    // maxExtIssLength_b64是最长的iss的base64编码的长度。
     var maxExtIssLength_b64 = 4 * (1 + (maxExtIssLength \ 3)); // max(b64Len(maxA, i)) for any i
+    // 拿出JWT中的iss字段（base64编码）
     var iss_b64[maxExtIssLength_b64] = SliceEfficient(inCount, maxExtIssLength_b64)(
         padded_unsigned_jwt, iss_index_b64, iss_length_b64
     );
 
     // HashBytesToField for all inputs hash
     iss_b64_F = HashBytesToField(maxExtIssLength_b64)(iss_b64);
+    // iss_index_in_payload_mod_4 = (iss_index_b64 - payload_start_index) % 4，
+    // - (iss_index_b64 - payload_start_index)小于2^{numBits(inCount)}=inCount
+    // ？？？这么计算有什么用？为什么是4？
     iss_index_in_payload_mod_4 = RemainderMod4(numBits(inCount))(iss_index_b64 - payload_start_index);
 
     /**

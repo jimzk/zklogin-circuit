@@ -18,7 +18,7 @@ Inputs:
     - in:           An array of blocks exactly nBlocks in length.
                     Each block is an array of 512 bits.
     - num_sha2_blocks:   Number of blocks to consider from the input.
-    
+
 Outputs:
     - out:      An array of 256 bits corresponding to the SHA256 output.
                 We hash the blocks starting from in[0] upto in[num_sha2_blocks-1] (inclusive).
@@ -29,7 +29,7 @@ Assumes:
 template SHA256_varlen(nBlocks) {
     signal input in[nBlocks][512];
     signal input num_sha2_blocks;
-    
+
     signal output out[256];
 
     component ha0 = H(0);
@@ -73,7 +73,7 @@ template SHA256_varlen(nBlocks) {
             sha256compression[i].inp[k] <== in[i][k];
         }
     }
-    
+
     signal eqs[nBlocks] <== OneBitVector(nBlocks)(num_sha2_blocks - 1);
 
     component totals[256];
@@ -114,6 +114,13 @@ Outputs:
 
 Assumes:
     - in is padded appropriately.
+
+这个方法只是对SHA256的输入和输出做了分割。
+
+Sha2_wapper(inWidth, inCount, outWidth, outCount)(in, num_sha2_blocks)：
+- 输入：数组in[inCount]是哈希的分块（每块512bit）输入，因此in总的位数要满足 inWidth * inCount % 512 == 0
+    - 哈希的输入是inWidth * inCount。但这里有效的分块数是num_sha2_blocks，剩下的是padding。
+- 输出：数组hash[outCount]，就是把256位的哈希拆成数组。因此，要满足outWidth * outCount == 256
 */
 template Sha2_wrapper(inWidth, inCount, outWidth, outCount) {
     // Segments must divide evenly into 512 bit blocks
@@ -124,7 +131,7 @@ template Sha2_wrapper(inWidth, inCount, outWidth, outCount) {
     signal input num_sha2_blocks;
 
     assert(outWidth * outCount == 256);
-    signal output hash[outCount];
+    signal output hash[outCount];  // 把256位的哈希拆成了数组
 
     // The content is decomposed to 512-bit blocks for SHA-256
     var nBlocks = (inWidth * inCount) / 512;
@@ -133,7 +140,7 @@ template Sha2_wrapper(inWidth, inCount, outWidth, outCount) {
     // How many segments are in each block
     assert(inWidth <= 512);
     assert(512 % inWidth == 0);
-    var nSegments = 512 / inWidth;
+    var nSegments = 512 / inWidth;  // 每个SHA256的分块里有nSegments个in中的元素。
     component sha256_blocks[nBlocks][nSegments];
 
     // For each 512-bit block going into SHA-256
@@ -143,11 +150,11 @@ template Sha2_wrapper(inWidth, inCount, outWidth, outCount) {
             // The index from the content is offset by the block we're composing times the number of segments per block,
             // s is then the segment offset within the block.
             var payloadIndex = (b * nSegments) + s;
-            
+
             // Decompose each segment into an array of individual bits
             sha256_blocks[b][s] = Num2BitsBE(inWidth);
             sha256_blocks[b][s].in <== in[payloadIndex];
-            
+
             // The bit index going into the current SHA-256 block is offset by the segment number times the bit width
             // of each content segment. sOffset + i is then the bit offset within the block (0-511).
             var sOffset = s * inWidth;
@@ -194,15 +201,31 @@ Inputs:
     - M: The SHA2 padded message (plus zero padding)
     - length: The first "length" entries of M contain the SHA2 padded message.
     - length_without_padding: The message length before SHA2 padding.
-                              Can alternatively be interpreted as the index at which the padding begins.
+                             Can alternatively be interpreted as the index at which the padding begins.
+
+SHA2PadVerifier(inCount)(M, length, length_without_padding)：in
+
+这个方法只检查SHA2-256的padding是否正确，不检查hash值是否正确。主要做的检查：
+- 消息长度与明文长度相等
+- 填充位的第1位为1，其余为0。
+
+SHA2-256是分块处理的，每个块是512bit。因此输入需要是512bit的倍数。填充的目的，就是让输入是512bit的倍数。
+- 填充的方式：| 消息明文 | 填充位（1-512bit）| 消息长度（64bit）｜
+    - 填充位是1000...
+    - 总长度需要是512bit的倍数。
+- SHA2-256一次最多处理2^64长度的明文
+- 明文和填充位满足：(b+padding_length) % 512 = 448
+    - 如果明文长度是b % 512 ∈ [448, 512(0)]，那填充位会跨过两个分块
+参考：https://zhuanlan.zhihu.com/p/404879837
 **/
 template SHA2PadVerifier(inCount) {
-    signal input M[inCount];
-    signal input length;
+    signal input M[inCount];  // inCount跟length不是同一个值。inCount是数组长度，而length是SHA2-256分块的长度。
+                              // 不是数组的全部内容都表示分块内容。比如padded_unsigned_jwt的结尾填充的0就不是，只是为了满足它的长度。
+    signal input length;  // length = L + 1 + K + 64，表示所有SHA256分块的总长度。length要是512的倍数。
     signal input length_without_padding; // in bytes
 
     var L_in_bytes = length_without_padding;
-    var L = L_in_bytes * 8;
+    var L = L_in_bytes * 8;  // L = length_without_padding *8
     var K = (length * 8) - L - 1 - 64;
 
     // Part of 4.1(b), namely, that K is the smallest, non-negative integer such that L + 1 + K + 64 is a multiple of 512
@@ -210,21 +233,25 @@ template SHA2PadVerifier(inCount) {
 
     // 4.1(c): Check that the length is encoded correctly
     var last_8_bytes_index = length - 8;  // or (L + 1 + K) / 8
+    // 拿到最后的64位（8字节）
     signal encoded_length[8] <== SliceEfficient(inCount, 8)(
         M, last_8_bytes_index, 8
     );
 
+    // 将最后的64位转换成数字
     signal encoded_length_in_bits <== Segments2NumBE(8, 8)(encoded_length);
+    // padding的最后64位表示消息长度L（这里是header+payload的长度），做这个检查
     encoded_length_in_bits === L;
 
     var rest_length_in_bytes = length - L_in_bytes - 8; // or (K + 1) / 8
     // max(rest_length_in_bytes) = (max(K) + 1) / 8 =  (1 + 511) / 8 = 64
+    // 拿到中间的 K+1 部分的字节，放进一个64长的字节数组里。
     signal rest[64] <== SliceEfficient(inCount, 64)(
         M, L_in_bytes, rest_length_in_bytes
     );
 
     // 4.1(a): Check that the first bit is 1.
-    // Note that L is a multiple of 8 (for JWTs), so in order to satisfy L + 1 + K = 448 (mod 512), it must be that K >= 7. 
+    // Note that L is a multiple of 8 (for JWTs), so in order to satisfy L + 1 + K = 448 (mod 512), it must be that K >= 7.
     // Therefore, checking rest[0] == 128 works in this context.
     rest[0] === 128; // 10000000
     // 4.1(b): Check that the rest of the bits are 0.

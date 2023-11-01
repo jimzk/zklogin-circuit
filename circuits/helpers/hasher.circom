@@ -5,16 +5,19 @@ include "../../node_modules/circomlib/circuits/poseidon.circom";
 include "misc.circom";
 
 // We only care about collision resistance in that it is hard to find
-// two vectors v1 and v2 such that H(v1) = H(v2) and v1.length = v2.length. 
-// This is because everything in the circuit is fixed length. 
-// One can see that it is satisfied by the below function. 
+// two vectors v1 and v2 such that H(v1) = H(v2) and v1.length = v2.length.
+// This is because everything in the circuit is fixed length.
+// One can see that it is satisfied by the below function.
+//
+// Hasher(inLen)(in): 对长度为inLen的数组in，做哈希计算。输出为域上的点，即一个值。
+// - 要满足 0<= inLen <= 16
 template Hasher(nInputs) {
     signal input in[nInputs];
     signal output out;
 
     component pos1, pos2;
-    // See https://github.com/iden3/circomlib/blob/master/circuits/poseidon.circom#L78. 
-    // It implicitly forces t <= 17 or nInputs <= 16. 
+    // See https://github.com/iden3/circomlib/blob/master/circuits/poseidon.circom#L78.
+    // It implicitly forces t <= 17 or nInputs <= 16.
     if (nInputs <= 16) {
         out <== Poseidon(nInputs)(in);
     } else if (nInputs <= 32) {
@@ -38,6 +41,8 @@ template Hasher(nInputs) {
 }
 
 // Returns the number of output chunks (each of size outWidth) needed to represent inBits.
+//
+// 向上取整的求余方法
 function getBaseConvertedOutputSize(inBits, outWidth) {
     var outCount = inBits \ outWidth;
     if (inBits % outWidth != 0) {
@@ -56,6 +61,8 @@ ConvertBase: Converts a number from base 2^inWidth to base 2^outWidth.
 
 In essence, we pad the bits (in big-endian) at the start with sufficiently many zeroes
 until the number of bits is a multiple of outWidth.
+
+ConvertBase(inWidth, inCount, outWidth, outCount)(in): 把元素的比特位数为inWidth个的数组in，转换成元素的比特位数为outWidth个的数组out。
 */
 template ConvertBase(inWidth, inCount, outWidth, outCount) {
     signal input in[inCount];
@@ -79,7 +86,7 @@ template ConvertBase(inWidth, inCount, outWidth, outCount) {
         bitsBE[i] <== expander[m].out[mB];
     }
 
-    // We convert things to little endian as it makes it 
+    // We convert things to little endian as it makes it
     //  easy to just append zeroes at the end.
     signal bitsLE[inBits];
     for (var i = 0; i < inBits; i++) {
@@ -109,6 +116,10 @@ template ConvertBase(inWidth, inCount, outWidth, outCount) {
     }
 }
 
+// HashToField(inWidth, inLen)(in)：
+// 1. 将长度为inLen，元素比特位数为inWidth的数组in，分割成compressor数组，每个元素有248位。
+// 2. 将compressor数组的每个248位元素都转换成数字（ConvertBase方法）
+// 3. 对compressor数组做哈希（按数字）。
 template HashToField(inWidth, inLen) {
     assert(inWidth <= 253); // log(p) - 1
 
@@ -120,9 +131,14 @@ template HashToField(inWidth, inLen) {
     signal output out <== Hasher(outCount)(packed);
 }
 
-// Note: The result of this function is the same as 
+// Note: The result of this function is the same as
 // directly calling HashToField(8, inLen)(in).
 // This is a more efficient implementation as it avoids the Num2Bits.
+//
+// HashBytesToField(inLen)(in)：
+// 1. 将长度为inLen的字节数组in，分割成compressor数组——每个元素有248位，为31个字节（in数组的元素位数）。
+// 2. 将compressor数组的每个248位元素都转换成数字（Segments2NumLE方法，将31个字节转成数字）
+// 3. 对compressor数组做哈希。得到的是标量域值。
 template HashBytesToField(inLen) {
     signal input in[inLen];
     var inWidth = 8;

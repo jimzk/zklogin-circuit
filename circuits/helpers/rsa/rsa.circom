@@ -50,14 +50,14 @@ template FpPow65537Mod(n, k) {
 RSA signature verifier
 
 Assumes:
-    - public exponent is 65537 
+    - public exponent is 65537
     - hashing algorithm is SHA-2.
     - the modulus and base_message are well-formed and range-checked (or otherwise trustworthy).
     - all inputs are in little-endian order.
 
-Note: It is not necessary to check that the modulus is well-formed 
-in the circuit because this happens at another place: 
-we reveal the modulus (as part of all inputs hash) 
+Note: It is not necessary to check that the modulus is well-formed
+in the circuit because this happens at another place:
+we reveal the modulus (as part of all inputs hash)
 and it gets matched against the JWK outside the circuit.
 
 Similarly, for base_message, the hash is computed inside the circuit,
@@ -65,6 +65,10 @@ so we do not need to check that it is well-formed.
 
 Spec: https://datatracker.ietf.org/doc/html/rfc8017#section-9.2
 Go: https://go.dev/src/crypto/rsa/pkcs1v15.go
+
+// 验签需要的RSA公共信息有两部分：
+//   - n：RSA的模，也就是这里的modules。长度是32*64=2048bit。
+//   - d: RSA的公钥。这里是65537，在JWTS（比如这里：https://www.googleapis.com/oauth2/v3/certs）里的base64url编码是AQAB
 **/
 template RSAVerify65537() {
     var n = 64; // Limb width
@@ -85,13 +89,14 @@ template RSAVerify65537() {
     }
     bigLessThan.out === 1;
 
+    // 计算: bigPow = signature^65537 mod modulus
     component bigPow = FpPow65537Mod(n, k);
     for (var i = 0; i < k; i++) {
         bigPow.base[i] <== signature[i];
         bigPow.modulus[i] <== modulus[i];
     }
 
-    // Note that there is no need to check that each limb of bigPow.out is in range, 
+    // Note that there is no need to check that each limb of bigPow.out is in range,
     //  because it is done in FpMul.
     component bigLessThan2 = BigLessThan(n, k);
     for (var i = 0; i < k; i++) {

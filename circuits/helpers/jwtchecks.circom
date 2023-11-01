@@ -23,11 +23,13 @@ Construction params:
 - maxClaimValueLen:     Maximum length of the claim value (including quotes)
 - maxWhiteSpaceLen:     Maximum number of white space characters
 
-Ideally, we want to set 
+Ideally, we want to set
 maxExtClaimLen = maxClaimNameLen + maxClaimValueLen + maxWhiteSpaceLen + 2 (2 for colon, comma).
 But in some cases (e.g., maxExtKCLen), we set it to a value lesser than that (to reduce #constraints).
-It just implies that the circuit will not be able to handle a situation where the 
+It just implies that the circuit will not be able to handle a situation where the
 claim name is maxClaimNameLen, claim value is maxClaimValueLen and there are maxWhiteSpaceLen whitespaces.
+
+返回内容：JWT中，ext_claim对应的name和value
 **/
 template ExtClaimOps(inCount, maxExtClaimLen, maxClaimNameLen, maxClaimValueLen, maxWhiteSpaceLen) {
     signal input content[inCount];
@@ -218,7 +220,7 @@ Inputs:
                     e.g, actual_nonce = '"Ac2SElwUoYv8jKhE6vs6Vmepu2M"'
                     Length of actual_nonce is nonceValueLength
 
-The circuit checks if the least significant nonceBitLen bits of 
+The circuit checks if the least significant nonceBitLen bits of
     expected_nonce match the Base64-decoded expected nonce.
 **/
 template NonceChecker(nonceValueLength, nonceBitLen) {
@@ -249,6 +251,10 @@ template NonceChecker(nonceValueLength, nonceBitLen) {
 EmailVerifiedChecker: Checks if email_verified is true when the key claim is email.
 
 Accepts both boolean true and string "true" as valid values for email_verified.
+
+这个方法做的检查：
+- 如果kc_name是"email"，那检查"email_verified"的值必须是true或"true"
+- 否则，通过检查
 **/
 template EmailVerifiedChecker(maxKCNameLen, maxEVValueLen) {
     assert(maxKCNameLen >= 5);
@@ -262,9 +268,10 @@ template EmailVerifiedChecker(maxKCNameLen, maxEVValueLen) {
     signal input ev_value[maxEVValueLen];
     signal input ev_value_length;
 
-    // A simple way of checking if kc_name[0:kc_name_length] is indeed 'email'. 
+    // A simple way of checking if kc_name[0:kc_name_length] is indeed 'email'.
     //   1. check if the first 5 characters are 'email'.
     //   2. check if the length is 5.
+    // 检查字段名是否为"email"
     var email[5] = [101, 109, 97, 105, 108];
     var is_email_0 = IsEqual()([kc_name[0], email[0]]);
     var is_email_1 = IsEqual()([kc_name[1], email[1]]);
@@ -275,11 +282,13 @@ template EmailVerifiedChecker(maxKCNameLen, maxEVValueLen) {
 
     AssertEqualIfEnabled()(is_email, [kc_name_length, 5]);
 
+    // 检查字段名是否为"email_verified"
     var expected_ev_name[16] = [34, 101, 109, 97, 105, 108, 95, 118, 101, 114, 105, 102, 105, 101, 100, 34]; // "email_verified"
     for (var i = 0; i < 16; i++) {
         AssertEqualIfEnabled()(is_email, [ev_name_with_quotes[i], expected_ev_name[i]]);
     }
 
+    // 支持"email_verified"的字段为true（X）或"true"（Y)
     var X = IsEqual()([ev_value_length, 4]);
     var Y = IsEqual()([ev_value_length, 6]);
     var Z = OR()(X, Y);
